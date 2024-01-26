@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# test relative path usage
+# lambda function extents
 set +x
 
 CLEAN_ONLY=0
@@ -30,6 +30,7 @@ while [ $# -gt 0 ] ; do
             ;;
 
         --coverage )
+            #COVER="perl -MDevel::Cover "
             if [[ "$1"x != 'x' &&  $1 != "-"* ]] ; then
                COVER_DB=$1
                LOCAL_COVERAGE=0
@@ -97,7 +98,7 @@ if [ "${VER[0]}" -lt 5 ] ; then
     FILTER='--filter branch'
 fi
 
-rm -rf *.txt* *.json dumper* relative
+rm -rf *.txt* *.json dumper* report lambda *.gcda *.gcno *.info
 
 if [ "x$COVER" != 'x' ] && [ 0 != $LOCAL_COVERAGE ] ; then
     cover -delete
@@ -112,32 +113,32 @@ if ! type g++ >/dev/null 2>&1 ; then
         exit 2
 fi
 
-$COVER $GENHTML_TOOL $LCOV_OPTS -o relative relative.info --ignore source,source --synthesize
+g++ -o lambda --coverage lambda.cpp -std=c++1y
+
+./lambda
+if [ 0 != $? ] ; then
+    echo "Error:  'lambda' returned error code"
+    if [ $KEEP_GOING == 0 ] ; then
+        exit 1
+    fi
+fi
+
+$COVER $LCOV_TOOL $LCOV_OPTS -o lambda.info --capture -d . --demangle --rc derive_function_end_line=0
+if [ 0 != $? ] ; then
+    echo "Error:  unexpected error code from lcov"
+    if [ $KEEP_GOING == 0 ] ; then
+        exit 1
+    fi
+fi
+
+
+$COVER $GENHTML_TOOL $LCOV_OPTS -o report lambda.info --show-proportion
 if [ 0 != $? ] ; then
     echo "Error:  unexpected error code from genhtml"
     if [ $KEEP_GOING == 0 ] ; then
         exit 1
     fi
 fi
-
-for dir in lib src lib/src ; do
-    if [ -e relative/$dir/$dir ] ; then
-        echo "Error: unexpected duplicated path to '$dir'"
-        if [ $KEEP_GOING == 0 ] ; then
-            exit 1
-        fi
-    fi
-done
-
-for f in lib lib/other_class.dart.gcov.html lib/src lib/src/sample_class.dart.gcov.html ; do
-    if [ ! -e relative/$f ] ; then
-        echo "Error: can't find '$f'"
-        if [ $KEEP_GOING == 0 ] ; then
-            exit 1
-        fi
-    fi
-done
-
 
 echo "Tests passed"
 

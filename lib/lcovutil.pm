@@ -64,7 +64,8 @@ our @EXPORT_OK = qw($tool_name $tool_dir $lcov_version $lcov_url
      set_rtl_extensions set_c_extensions
      $source_filter_lookahead $source_filter_bitwise_are_conditional
      $exclude_exception_branch
-     $derive_function_end_line $trivial_function_threshold
+     $derive_function_end_line $derive_function_end_line_all_files
+     $trivial_function_threshold
 
      $lcov_filter_parallel $lcov_filter_chunk_size
 
@@ -134,7 +135,7 @@ our $ERROR_UNSUPPORTED;          # some unsupported feature or usage
 our $ERROR_PARALLEL;             # error in fork/join
 our $ERROR_DEPRECATED;           # deprecated feature
 our $ERROR_CALLBACK;             # callback produced an error
-our $ERROR_INCONSISTENT_DATA;    # somthing wrong with .info
+our $ERROR_INCONSISTENT_DATA;    # something wrong with .info
 our $ERROR_RANGE;                # line number out of range
 our $ERROR_UTILITY;              # some tool failed - e.g., 'find'
 our $ERROR_USAGE;                # misusing some feature
@@ -270,7 +271,7 @@ our %COVERAGE_FILTERS = ("branch"        => $FILTER_BRANCH_NO_COND,
                          "trivial"       => $FILTER_TRIVIAL_FUNCTION,);
 our @cov_filter;    # 'undef' if filter is not enabled,
                     # [line_count, coverpoint_count] histogram if
-                    #   filter is enabled: nubmer of applications
+                    #   filter is enabled: number of applications
                     #   of this filter
 
 our $EXCL_START = "LCOV_EXCL_START";
@@ -289,10 +290,11 @@ our $EXCL_EXCEPTION_LINE = 'LCOV_EXCL_EXCEPTION_BR_LINE';
 our @exclude_file_patterns;
 our @include_file_patterns;
 our %excluded_files;
-our $case_insensitive           = 0;
-our $exclude_exception_branch   = 0;
-our $derive_function_end_line   = 1;
-our $trivial_function_threshold = 5;
+our $case_insensitive                   = 0;
+our $exclude_exception_branch           = 0;
+our $derive_function_end_line           = 1;
+our $derive_function_end_line_all_files = 0;    # by default, C only
+our $trivial_function_threshold         = 5;
 
 # list of regexps applied to line text - if exclude if matched
 our @omit_line_patterns;
@@ -638,7 +640,7 @@ sub init_parallel_params()
         chdir($cwd);
         if ($@) {
             lcovutil::ignorable_error($lcovutil::ERROR_PACKAGE,
-                "package Memory::Process is required to control memory consumption during parallel operatons: $@"
+                "package Memory::Process is required to control memory consumption during parallel operations: $@"
             );
             $use_MemoryProcess = 0;
         }
@@ -1031,6 +1033,8 @@ my @deprecated_uses;
 
 my %rc_common = (
              'derive_function_end_line' => \$lcovutil::derive_function_end_line,
+             'derive_function_end_line_all_files' =>
+        \$derive_function_end_line_all_files,
              'trivial_function_threshold' => \$lcovutil::trivial_function_threshold,
              "lcov_tmp_dir"                => \$lcovutil::tmp_dir,
              "lcov_json_module"            => \$JsonSupport::rc_json_module,
@@ -1388,7 +1392,7 @@ sub munge_file_patterns
                     }
                 }
                 lcovutil::ignorable_warning($lcovutil::ERROR_USAGE,
-                    "--$flag pattern '$pat' does not seem to be case insensitive - but you asked for case insenstive matching"
+                    "--$flag pattern '$pat' does not seem to be case insensitive - but you asked for case insensitive matching"
                 );
             }
         }
@@ -1454,7 +1458,7 @@ sub subst_file_name($)
         my $old = $name;
         # sadly, no support for pre-compiled patterns
         eval '$name =~ ' . $p->[0] . ';';  # apply pattern that user provided...
-            # $@ should never match:  we already checked pattern vaidity during
+            # $@ should never match:  we already checked pattern validity during
             #   initialization - above.  Still: belt and braces.
         die("invalid 'subst' regexp '" . $p->[0] . "': $@")
             if ($@);
@@ -1507,6 +1511,7 @@ sub define_errors()
 
 sub summarize_messages
 {
+    my $silent = shift;
     return if $lcovutil::in_child_process;
 
     my %total = ('error'   => 0,
@@ -1521,19 +1526,20 @@ sub summarize_messages
             $found = 1;
         }
     }
-    info(-1, "Message summary:\n");
+    my $header = "Message summary:\n";
     foreach my $type ('error', 'warning', 'ignore') {
         next unless $total{$type};
         $found = 1;
-        my $leader = '  ' . $total{$type} . " $type message" .
+        my $leader = $header . '  ' . $total{$type} . " $type message" .
             ($total{$type} > 1 ? 's' : '') . ":\n";
         my $h = $message_types{$type};
         foreach my $k (sort keys %$h) {
             info(-1, $leader . '    ' . $k . ": " . $h->{$k} . "\n");
             $leader = '';
         }
+        $header = '';
     }
-    info(-1, "  no messages were reported\n") unless $found;
+    info(-1, "$header  no messages were reported\n") unless $found || $silent;
 }
 
 sub parse_ignore_errors(@)
@@ -1873,7 +1879,7 @@ sub report_unknown_child
 {
     my $child = shift;
     # this can happen if the user loads a callback module which starts a chaild
-    # process when it is loaded or initialied and fails to wait for that child
+    # process when it is loaded or initialized and fails to wait for that child
     # to finish.  How it manifests is an orphan PID which is smaller (older)
     # than any of the children that this parent actually scheduled
     lcovutil::ignorable_error($lcovutil::ERROR_CHILD,
@@ -1989,7 +1995,7 @@ sub parse_cov_filters(@)
         $cov_filter[$item_id] = [0, 0];
     }
     if ($cov_filter[$FILTER_LINE]) {
-        # when line filtering is enabled, turn on brace and blank fltering as well
+        # when line filtering is enabled, turn on brace and blank filtering as well
         #  (backward compatibility)
         $cov_filter[$FILTER_LINE_CLOSE_BRACE] = [0, 0];
         $cov_filter[$FILTER_BLANK_LINE]       = [0, 0];
@@ -2443,7 +2449,7 @@ sub new
     my $class  = shift;
     my $reason = shift;
 
-    # backward compatibility:  see if the arguements were passed in a
+    # backward compatibility:  see if the arguments were passed in a
     #  one long string
     my $args   = \@_;
     my $arglen = 'criteria' eq $reason ? 4 : 2;
@@ -2569,7 +2575,7 @@ sub compare_version
 #    abbreviated author name:  (must be set to something - possibly NONE
 #    full author name:  some string or undef
 #    date string:  when this line was last changed
-#    commit ID:  sonething meaningful to you
+#    commit ID:  something meaningful to you
 sub annotate
 {
     my ($self, $filename) = @_;
@@ -2597,9 +2603,10 @@ sub annotate
 
 sub check_criteria
 {
-    my ($self, $name, $type, $json) = @_;
+    my ($self, $name, $type, $data) = @_;
 
-    my $iter = $self->pipe('criteria', $name, $type, $json);
+    my $iter =
+        $self->pipe('criteria', $name, $type, JsonSupport::encode($data));
     return (0) unless $iter;    # constructor will have given error message
     my @messages;
     while (my $line = $iter->next()) {
@@ -2609,6 +2616,16 @@ sub check_criteria
         push(@messages, $line);
     }
     return ($iter->close(), \@messages);
+}
+
+sub select
+{
+    my ($self, $lineData, $annotateData) = @_;
+
+    my @params = ('select', JsonSupport::encode($lineData));
+    push(@params, JsonSupport::encode($annotateData))
+        if defined($annotateData);
+    return $self->call(@params);
 }
 
 package JsonSupport;
@@ -3441,10 +3458,23 @@ sub name
     return $self->[NAME];
 }
 
+sub filename
+{
+    my $self = shift;
+    return $self->[FILE];
+}
+
 sub hit
 {
     my $self = shift;
     return $self->[COUNT];
+}
+
+sub isLambda
+{
+    my $self = shift;
+    return (TraceFile::is_c_file($self->filename()) &&
+            $self->name() =~ /{lambda\(/);
 }
 
 sub count
@@ -3535,7 +3565,7 @@ sub addAlias
     } else {
         $aliases->{$name} = $count;
         $changed = 1;
-        # keep track of the shortest name as the function represntative
+        # keep track of the shortest name as the function representative
         my $curlen = length($self->[NAME]);
         my $len    = length($name);
         $self->[NAME] = $name
@@ -4835,7 +4865,7 @@ sub parseLines
     my $excl_ex_stop             = qr($lcovutil::EXCL_EXCEPTION_BR_STOP);
     my $excl_ex_line             = qr($lcovutil::EXCL_EXCEPTION_LINE);
     # @todo:  if we had annotated data here, then we could whine at the
-    #   author fo the unmatched start, extra end, etc.
+    #   author of the unmatched start, extra end, etc.
     LINES: foreach (@$sourceLines) {
         $line += 1;
         my $exclude_branch_line           = 0;
@@ -5251,7 +5281,7 @@ sub files
 sub directories
 {
     my $self = shift;
-    # return hash of directories whcih contain source files
+    # return hash of directories which contain source files
     my %dirs;
     foreach my $f ($self->files()) {
         my $d = File::Basename::dirname($f);
@@ -5495,7 +5525,8 @@ sub _eraseFunctions
         }
         foreach my $p (@lcovutil::exclude_function_patterns) {
             my $pat = $p->[0];
-            while (my ($alias, $hit) = each(%{$fcn->aliases()})) {
+            my $a   = $fcn->aliases();
+            foreach my $alias (keys %$a) {
                 if ($alias =~ $pat) {
                     ++$p->[-1] if $isMasterList;
                     if (defined($end_line)) {
@@ -6161,15 +6192,19 @@ sub applyFilters
         # derive function end line for C/C++ code if requested
         # (not trying to handle python nested functions, etc)
         DERIVE:
-        if (0 == ($self->[STATE] & DID_DERIVE) &&
+        if (0 == ($self->[STATE] & DID_DERIVE)           &&
             defined($lcovutil::derive_function_end_line) &&
             $lcovutil::derive_function_end_line != 0     &&
             defined($lcovutil::func_coverage)            &&
-            is_c_file($source_file)) {
+            ($lcovutil::derive_end_line_all_files ||
+                is_c_file($source_file))
+        ) {
             my @lines = sort { $a <=> $b } $traceInfo->sum()->keylist();
             # sort functions by start line number
+            # ignore lambdas - which we don't process correctly at the moment
+            #   (would need to do syntactic search for the end line)
             my @functions = sort { $a->line() <=> $b->line() }
-                $traceInfo->func()->valuelist();
+                grep({ !$_->isLambda() } $traceInfo->func()->valuelist());
 
             my $currentLine = @lines ? shift(@lines) : 0;
             my $funcData    = $traceInfo->testfnc();
@@ -6235,6 +6270,9 @@ sub applyFilters
                                        $func->name() . "\n");
                     $func->set_end_line($currentLine);
                 }
+                die('failed to set end line for ' .
+                    $func->name() . ' in file ' . $func->filename())
+                    unless defined($func->end_line());
                 # now look for this function in each testcase -
                 #  set the same endline (if not already set)
                 my $key = $func->file() . ':' . $first;
@@ -6470,6 +6508,16 @@ sub _read_info
 
             /^VER:(.+)$/ && do {
                 # revision control version string found
+                # we might try to set the version multiple times if the
+                #  file appears multiple times in the .info file
+                if (defined($fileData->version()) &&
+                    $fileData->version() eq $1) {
+                    # this is OK -
+                    #  we might try to set the version multiple times if the
+                    #  file appears multiple times in the .info file.
+                    # This can happen, with some translators
+                    last;
+                }
                 $fileData->version($1);
                 last;
             };
@@ -6495,6 +6543,13 @@ sub _read_info
 
             /^DA:(\d+),([^,]+)(,([^,\s]+))?/ && do {
                 my ($line, $count, $checksum) = ($1, $2, $4);
+                if ($line <= 0) {
+                    lcovutil::ignorable_error(
+                        $lcovutil::ERROR_INCONSISTENT_DATA,
+                        "\"$tracefile\":$.: unexpected line number '$line' in .info file record '$_'"
+                    );
+                    last;
+                }
                 if ($readSourceCallback->notEmpty()) {
                     # does the source checksum match the recorded checksum?
                     if ($verify_checksum) {
@@ -6529,7 +6584,8 @@ sub _read_info
                 }
 
                 # Store line checksum if available
-                if (defined($checksum)) {
+                if (defined($checksum) &&
+                    $lcovutil::verify_checksum) {
                     # Does it match a previous definition
                     if ($fileData->check()->mapped($line) &&
                         ($fileData->check()->value($line) ne $checksum)) {
@@ -6537,7 +6593,6 @@ sub _read_info
                             "checksum mismatch at $filename:$line in $tracefile"
                         );
                     }
-
                     $fileData->check()->replace($line, $checksum);
                 }
                 last;
@@ -6549,6 +6604,13 @@ sub _read_info
                 my $lineNo   = $1;
                 my $fnName   = $4;
                 my $end_line = $3;
+                if ($lineNo <= 0) {
+                    lcovutil::ignorable_error(
+                        $lcovutil::ERROR_INCONSISTENT_DATA,
+                        "\"$tracefile\":$.: unexpected line number '$lineNo' in .info file record '$_'"
+                    );
+                    last;
+                }
                 # the function may already be defined by another testcase
                 #  (for the same file)
                 $functionMap->define_function($fnName, $filename, $lineNo,
@@ -6578,6 +6640,24 @@ sub _read_info
                 #     and check whether we found an integer or an expression
                 my ($line, $is_exception, $block, $d) =
                     ($1, defined($2) && 'e' eq $2, $3, $4);
+
+                if ($line <= 0) {
+                    # Python coverage.py emits line number 0 (zero) for branches
+                    #  - which is bogus, as there is no line number zero,
+                    #    and the corresponding branch expression is not there in
+                    #    any case.
+                    # Meantime:  this confuses the lcov DB - so we simply skip
+                    # such data.
+                    # Note that we only need to check while reading .info files.
+                    #   - if we wrote one from geninfo, then we will not have
+                    #     produced bogus data - so no need to check.
+                    #   - only some (broken) external tool could have the issue
+                    lcovutil::ignorable_error(
+                        $lcovutil::ERROR_INCONSISTENT_DATA,
+                        "\"$tracefile\":$.: unexpected line number '$line' in .info file record '$_'"
+                    );
+                    last;
+                }
 
                 last if $is_exception && $lcovutil::exclude_exception_branch;
                 my $comma = rindex($d, ',');
@@ -6818,14 +6898,8 @@ sub write_info($$$)
             print(INFO_HANDLE "VER:" . $entry->version() . "\n")
                 if defined($entry->version());
             if (defined($srcReader)) {
-                $srcReader->close();
-                if (is_c_file($source_file)) {
-                    lcovutil::info(1,
-                                   "reading $source_file for lcov checksum\n");
-                    $srcReader->open($source_file);
-                } else {
-                    lcovutil::debug("not reading $source_file: no ext match\n");
-                }
+                lcovutil::info(1, "reading $source_file for lcov checksum\n");
+                $srcReader->open($source_file);
             }
 
             my $functionMap = $testfncdata->{$testname};
@@ -6848,6 +6922,14 @@ sub write_info($$$)
                         defined($data->end_line()) ?
                         ',' . $data->end_line() :
                         '';
+                    if ($line <= 0) {
+                        my $alias = (sort keys %$aliases)[0];
+                        lcovutil::ignorable_error(
+                            $lcovutil::ERROR_INCONSISTENT_DATA,
+                            "\"$source_file\": unexpected line number '$line' for function $alias"
+                        );
+                        next;
+                    }
                     foreach my $alias (sort keys %$aliases) {
                         print(INFO_HANDLE "FN:$line$endLine,$alias\n");
                     }
@@ -6855,8 +6937,9 @@ sub write_info($$$)
                 my $f_found = 0;
                 my $f_hit   = 0;
                 foreach my $key (@functionOrder) {
-                    my $data    = $functionMap->findKey($key);
-                    my $line    = $data->line();
+                    my $data = $functionMap->findKey($key);
+                    my $line = $data->line();
+                    next unless $line > 0;
                     my $aliases = $data->aliases();
                     foreach my $alias (sort keys %$aliases) {
                         my $hit = $aliases->{$alias};
@@ -6877,6 +6960,13 @@ sub write_info($$$)
 
                 foreach my $line (sort({ $a <=> $b } $testbrcount->keylist())) {
 
+                    if ($line <= 0) {
+                        lcovutil::ignorable_error(
+                            $lcovutil::ERROR_INCONSISTENT_DATA,
+                            "\"$source_file\": unexpected line number '$line' in branch data record record '$_'"
+                        );
+                        last;
+                    }
                     my $brdata = $testbrcount->value($line);
                     # want the block_id to be treated as 32-bit unsigned integer
                     #  (need masking to match regression tests)
@@ -6914,7 +7004,8 @@ sub write_info($$$)
                 if ($verify_checksum) {
                     if (exists($checkdata->{$line})) {
                         $chk = $checkdata->{$line};
-                    } elsif (defined($srcReader)) {
+                    } elsif (defined($srcReader) &&
+                             $srcReader->notEmpty()) {
                         my $content = $srcReader->getLine($line);
                         $chk = Digest::MD5::md5_base64($content);
                     }
@@ -7291,7 +7382,7 @@ sub merge
                         while (my ($key, $data) = each(%$func_map)) {
                             $function_mapping->{$key} = [$data->[0], []]
                                 unless exists($function_mapping->{$key});
-                            die("mimatched function name '" .
+                            die("mismatched function name '" .
                                 $data->[0] . "' at $key")
                                 unless (
                                   $data->[0] eq $function_mapping->{$key}->[0]);
