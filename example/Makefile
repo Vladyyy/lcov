@@ -199,6 +199,7 @@ test_differential:
 	  --diff-file udiff.txt                                  \
 	  --title "Differential report for code review" --show-owners  \
 	  --annotate $(SCRIPTDIR)/gitblame.pm                    \
+	  --html-prolog ../header.js \
 	  --version-script $(SCRIPTDIR)/gitversion.pm            \
 	  --select-script $(SCRIPTDIR)/select.pm                 \
 	  --select-script --tla --select-script UNC,UIC,LBC      \
